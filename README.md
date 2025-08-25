@@ -41,7 +41,7 @@ pip install opencv-python
 pip install matplotlib
 pip install pillow
 pip install numpy
-pip install tkinter
+pip install tk 
 ```
 
 ### SAM 2 Model Download
