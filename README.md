@@ -10,6 +10,9 @@ This software package consists of two primary components:
 
 The complete source code, along with installation instructions, is available in our GitHub repository. Users should consult this README.md file for detailed installation and setup instructions to ensure proper configuration for use.
 
+## Demo video
+https://youtu.be/hMHhlv2D3rA (youtube)
+
 ## Features
 
 ### SAM 2 Mask Generator
