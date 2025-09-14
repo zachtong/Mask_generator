@@ -8,27 +8,30 @@ import os
 from setuptools import find_packages, setup
 
 # Package metadata
-NAME = "SAM-2"
+NAME = "SAM2-Mask-Generator"
 VERSION = "1.0"
-DESCRIPTION = "SAM 2: Segment Anything in Images and Videos"
-URL = "https://github.com/facebookresearch/sam2"
-AUTHOR = "Meta AI"
-AUTHOR_EMAIL = "segment-anything@meta.com"
+DESCRIPTION = "SAM 2 Mask Generator for Digital Image Correlation (DIC) and ROI Recognition"
+URL = "https://www.researchsquare.com/article/rs-5566473/v1"  # Your research paper
+AUTHOR = "Zixiang Tong"  # Replace with your actual name
+AUTHOR_EMAIL = "zachtong@utexas.edu"  # Replace with your email
 LICENSE = "Apache 2.0"
 
 # Read the contents of README file
 with open("README.md", "r", encoding="utf-8") as f:
     LONG_DESCRIPTION = f.read()
 
-# Required dependencies
+# Required dependencies (matching README.md requirements)
 REQUIRED_PACKAGES = [
-    "torch>=2.5.1",
-    "torchvision>=0.20.1",
+    "torch>=2.0.0",
+    "torchvision>=0.15.0", 
     "numpy>=1.24.4",
     "tqdm>=4.66.1",
     "hydra-core>=1.3.2",
-    "iopath>=0.1.10",
+    "iopath>=0.1.10",        # Added for SAM2 file I/O operations
+    "omegaconf>=2.3.0",      # Added for Hydra configuration management
     "pillow>=9.4.0",
+    "opencv-python>=4.7.0",  # Added for image processing
+    "matplotlib>=3.6.0",     # Added for GUI plotting
 ]
 
 EXTRA_PACKAGES = {
@@ -168,7 +171,7 @@ setup(
     include_package_data=True,
     install_requires=REQUIRED_PACKAGES,
     extras_require=EXTRA_PACKAGES,
-    python_requires=">=3.10.0",
+    python_requires=">=3.8.0",  # Matching README.md requirement
     ext_modules=get_extensions(),
     cmdclass=cmdclass,
 )
