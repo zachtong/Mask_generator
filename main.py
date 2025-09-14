@@ -51,6 +51,10 @@ class SAM2App:
         self.master.title("SAM2 Mask Generator")
         self.config = Config()
         matplotlib.use('TkAgg')
+        
+        # Calculate DPI scale factor for matplotlib fonts
+        self.dpi_scale = self.get_dpi_scale_factor()
+        
         self.current_image = None
         self.current_mask = None
         self.plotting_mode = False
@@ -58,6 +62,10 @@ class SAM2App:
         self.device = 'cpu'
         self.point_mode = 'foreground'
         self.inference_state = None
+        
+        # Add predictor management for memory leak prevention
+        self.current_predictor = None
+        self.current_model_config = None
         
         self.setup_gui()
         self.prev_masks = []
@@ -67,6 +75,39 @@ class SAM2App:
         self.end_index = []
         self.start_index_previous = []
         self.end_index_previous = []
+    
+    def get_dpi_scale_factor(self):
+        """Get DPI scale factor for this instance - enhanced for 4K displays"""
+        try:
+            # Method 1: Use tkinter's DPI detection
+            dpi = self.master.winfo_fpixels('1i')
+            tkinter_scale = dpi / 96.0
+            
+            # Method 2: Get screen dimensions for additional validation
+            screen_width = self.master.winfo_screenwidth()
+            screen_height = self.master.winfo_screenheight()
+            
+            # For 4K displays, use more aggressive scaling
+            if screen_width >= 3840 or screen_height >= 2160:  # 4K or higher
+                # Ensure minimum 1.5x scaling for 4K displays
+                scale_factor = max(1.5, tkinter_scale)
+                # Allow higher scaling for very high DPI 4K displays
+                scale_factor = min(scale_factor, 3.0)
+            elif screen_width >= 2560 or screen_height >= 1440:  # 2K displays
+                scale_factor = max(1.2, tkinter_scale)
+                scale_factor = min(scale_factor, 2.0)
+            else:  # Standard displays
+                scale_factor = max(1.0, tkinter_scale)
+                scale_factor = min(scale_factor, 1.5)
+            
+            print(f"Screen resolution: {screen_width}x{screen_height}")
+            print(f"Detected DPI: {dpi:.1f}, Tkinter scale: {tkinter_scale:.2f}")
+            print(f"Applied scale factor: {scale_factor:.2f}")
+            
+            return scale_factor
+        except Exception as e:
+            print(f"DPI detection failed: {e}, using default scale 1.25 for safety")
+            return 1.25  # Conservative default for modern displays
     
     def setup_gui(self):
         main_frame = ttk.Frame(self.master, padding="10")
@@ -180,9 +221,15 @@ class SAM2App:
         self.progress_label.pack()
 
     def setup_image_display(self, parent):
-        self.fig, axes_2d  = plt.subplots(2, 2, figsize=(8, 6))
-        (self.ax1, self.ax2, self.ax3, self.ax4) = axes_2d.ravel()
-
+        # Use 1x3 layout: Original Image | Generated Mask | Overlay (when available)
+        self.fig, (self.ax1, self.ax2, self.ax3) = plt.subplots(1, 3, figsize=(15, 5))
+        
+        # Configure subplot spacing and appearance
+        self.fig.subplots_adjust(left=0.05, right=0.95, top=0.9, bottom=0.1, wspace=0.3)
+        
+        # Set figure background color
+        self.fig.patch.set_facecolor('#f0f0f0')
+        
         self.canvas = FigureCanvasTkAgg(self.fig, master=parent)
         self.canvas_widget = self.canvas.get_tk_widget()
         self.canvas_widget.pack(fill=tk.BOTH, expand=True)
@@ -220,18 +267,34 @@ class SAM2App:
 
     def show_raw_image(self):
         image_files = self.get_image_files(self.config.input_dir)
-        if image_files:
+        if not image_files:
+            messagebox.showwarning("Warning", "No supported image files found in input directory.")
+            return
+            
+        try:
             self.start_index = int(self.start_index_entry.get() or 1)
-            try:
-                # Try to read image with OpenCV
-                self.current_image = cv2.imread(image_files[0 + self.start_index - 1])
+        except ValueError:
+            messagebox.showerror("Error", "Invalid start index. Please enter a valid number.")
+            return
+            
+        # Validate start index bounds
+        if self.start_index < 1 or self.start_index > len(image_files):
+            messagebox.showerror("Error", f"Start index must be between 1 and {len(image_files)}.")
+            return
+            
+        try:
+            # Calculate safe array index (convert from 1-based to 0-based)
+            array_index = self.start_index - 1
+            image_path = image_files[array_index]
+            
+            # Try to read image with OpenCV
+            self.current_image = cv2.imread(image_path)
                 
-                # If reading fails (e.g., 32-bit TIFF), try using PIL/Pillow
-                if self.current_image is None:
-
-                    
+            # If reading fails (e.g., 32-bit TIFF), try using PIL/Pillow
+            if self.current_image is None:
+                try:
                     # Use PIL to read image
-                    pil_image = Image.open(image_files[0 + self.start_index - 1])
+                    pil_image = Image.open(image_path)
                     
                     # Convert to RGB mode (if not already)
                     if pil_image.mode != 'RGB':
@@ -241,53 +304,101 @@ class SAM2App:
                     self.current_image = np.array(pil_image)
                     
                     # PIL reads images in RGB order, no need for BGR to RGB conversion
-                else:
-                    # OpenCV reads images in BGR order, need to convert to RGB
-                    self.current_image = cv2.cvtColor(self.current_image, cv2.COLOR_BGR2RGB)
-                
-                self.display_image()
-            except Exception as e:
-                messagebox.showerror("Error", f"Failed to load image: {str(e)}")
-                print(f"Error loading image: {e}")
+                except Exception as pil_error:
+                    messagebox.showerror("Error", f"Failed to load image with both OpenCV and PIL: {str(pil_error)}")
+                    print(f"PIL error loading image: {pil_error}")
+                    return
+            else:
+                # OpenCV reads images in BGR order, need to convert to RGB
+                self.current_image = cv2.cvtColor(self.current_image, cv2.COLOR_BGR2RGB)
+            
+            self.display_image()
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to load image: {str(e)}")
+            print(f"Error loading image: {e}")
 
     def display_image(self, keep_points=False):
         if self.current_image is not None:
+            # Panel 1: Original Image with Points
             self.ax1.clear()
             self.ax1.imshow(self.current_image)
-            self.ax1.set_title('Input Image')
-            self.ax1.set_xlabel('X')
-            self.ax1.set_ylabel('Y')
-
+            # Enhanced font scaling for matplotlib based on screen resolution
+            screen_width = self.master.winfo_screenwidth()
+            if screen_width >= 3840:  # 4K displays
+                title_size = max(16, int(18 * self.dpi_scale))
+                label_size = max(12, int(14 * self.dpi_scale))
+            elif screen_width >= 2560:  # 2K displays
+                title_size = max(14, int(16 * self.dpi_scale))
+                label_size = max(10, int(12 * self.dpi_scale))
+            else:  # Standard displays
+                title_size = max(12, int(14 * self.dpi_scale))
+                label_size = max(10, int(12 * self.dpi_scale))
+            self.ax1.set_title('Original Image', fontsize=title_size, fontweight='bold', pad=10)
+            self.ax1.set_xlabel('X', fontsize=label_size)
+            self.ax1.set_ylabel('Y', fontsize=label_size)
+            
             # Always check if points should be retained
             if self.config.input_points:
                 self.update_image_with_points(self.ax1)
 
+            # Panel 2: Generated Mask
+            if screen_width >= 3840:  # 4K displays
+                text_size = max(14, int(16 * self.dpi_scale))
+            elif screen_width >= 2560:  # 2K displays
+                text_size = max(12, int(14 * self.dpi_scale))
+            else:  # Standard displays
+                text_size = max(10, int(12 * self.dpi_scale))
             if all(item is None for item in self.current_masks):
                 self.ax2.clear()
-                self.ax2.set_title('Mask will be displayed here')
+                self.ax2.set_title('Generated Mask', fontsize=title_size, fontweight='bold', pad=10)
+                self.ax2.text(0.5, 0.5, 'Mask will be\ndisplayed here', 
+                             ha='center', va='center', fontsize=text_size, 
+                             transform=self.ax2.transAxes, color='gray')
                 self.ax2.axis('off')
             else:
-
-                # ax2  mask1
                 self.ax2.clear()
                 self.ax2.imshow(self.current_masks[0], cmap='gray')
-                self.ax2.set_title('Mask #1')
+                self.ax2.set_title('Generated Mask', fontsize=title_size, fontweight='bold', pad=10)
                 self.ax2.axis('off')
 
-                # ax3 mask2
-                # self.ax3.clear()
-                # self.ax3.imshow(self.current_masks[1], cmap='gray')
-                # self.ax3.set_title('Mask #2')
-                # self.ax3.axis('off')
-
-                # # ax4 mask3
-                # self.ax4.clear()
-                # self.ax4.imshow(self.current_masks[2], cmap='gray')
-                # self.ax4.set_title('Mask #3')
-                # self.ax4.axis('off')
-
-
-
+            # Panel 3: Overlay View (Original + Mask)
+            self.ax3.clear()
+            if not all(item is None for item in self.current_masks):
+                # Create overlay: original image with semi-transparent mask
+                overlay_image = self.current_image.copy()
+                if len(overlay_image.shape) == 2:
+                    overlay_image = np.stack([overlay_image] * 3, axis=-1)
+                
+                # Create colored mask overlay (red for mask)
+                mask_colored = np.zeros_like(overlay_image)
+                mask_colored[:, :, 0] = self.current_masks[0] / 255.0  # Red channel
+                
+                # Blend images
+                alpha = 0.4  # Transparency
+                blended = overlay_image * (1 - alpha) + mask_colored * alpha * 255
+                blended = np.clip(blended, 0, 255).astype(np.uint8)
+                
+                self.ax3.imshow(blended)
+                self.ax3.set_title('Overlay View', fontsize=title_size, fontweight='bold', pad=10)
+            else:
+                self.ax3.set_title('Overlay View', fontsize=title_size, fontweight='bold', pad=10)
+                self.ax3.text(0.5, 0.5, 'Overlay will be\ndisplayed here', 
+                             ha='center', va='center', fontsize=text_size, 
+                             transform=self.ax3.transAxes, color='gray')
+            
+            self.ax3.axis('off')
+            
+            # Apply consistent styling with DPI scaling
+            if screen_width >= 3840:  # 4K displays
+                tick_size = max(10, int(12 * self.dpi_scale))
+            elif screen_width >= 2560:  # 2K displays
+                tick_size = max(8, int(10 * self.dpi_scale))
+            else:  # Standard displays
+                tick_size = max(7, int(9 * self.dpi_scale))
+            for ax in [self.ax1, self.ax2, self.ax3]:
+                ax.tick_params(labelsize=tick_size)
+                
             self.canvas.draw()
 
     def toggle_plotting_mode(self):
@@ -325,21 +436,56 @@ class SAM2App:
 
         ax.clear()  # Clear the axes before redrawing
         ax.imshow(self.current_image)  # Redraw the current image
+        
+        # Enhanced DPI-aware font sizes for different screen resolutions
+        screen_width = self.master.winfo_screenwidth()
+        if screen_width >= 3840:  # 4K displays
+            title_size = max(16, int(18 * self.dpi_scale))
+            label_size = max(12, int(14 * self.dpi_scale))
+            legend_size = max(11, int(13 * self.dpi_scale))
+            tick_size = max(10, int(12 * self.dpi_scale))
+            point_size = max(100, int(120 * self.dpi_scale))
+        elif screen_width >= 2560:  # 2K displays
+            title_size = max(14, int(16 * self.dpi_scale))
+            label_size = max(10, int(12 * self.dpi_scale))
+            legend_size = max(9, int(11 * self.dpi_scale))
+            tick_size = max(8, int(10 * self.dpi_scale))
+            point_size = max(80, int(100 * self.dpi_scale))
+        else:  # Standard displays
+            title_size = max(12, int(14 * self.dpi_scale))
+            label_size = max(10, int(12 * self.dpi_scale))
+            legend_size = max(8, int(10 * self.dpi_scale))
+            tick_size = max(7, int(9 * self.dpi_scale))
+            point_size = max(70, int(90 * self.dpi_scale))
+        
+        ax.set_title('Original Image', fontsize=title_size, fontweight='bold', pad=10)
+        ax.set_xlabel('X', fontsize=label_size)
+        ax.set_ylabel('Y', fontsize=label_size)
 
         if self.config.input_points:
             points = np.array(self.config.input_points)
             labels = np.array(self.config.input_labels)
-            ax.scatter(points[labels == 1, 0], points[labels == 1, 1], color='red', s=50, label='Foreground')
-            ax.scatter(points[labels == 0, 0], points[labels == 0, 1], color='blue', s=50, label='Background')
+            
+            # Enhanced point visualization with DPI scaling
+            ax.scatter(points[labels == 1, 0], points[labels == 1, 1], 
+                      color='red', s=point_size, alpha=0.8, edgecolors='white', 
+                      linewidth=2, label='Foreground', marker='o')
+            ax.scatter(points[labels == 0, 0], points[labels == 0, 1], 
+                      color='blue', s=point_size, alpha=0.8, edgecolors='white', 
+                      linewidth=2, label='Background', marker='s')
 
         # Clear the previous legend to avoid repetition
         legend = ax.get_legend()
         if legend:
             legend.remove()
 
-        # Draw the new legend
-        ax.legend(loc='upper right', fontsize='small')
+        # Enhanced legend styling with DPI scaling
+        if self.config.input_points:
+            legend = ax.legend(loc='upper right', fontsize=legend_size, framealpha=0.9, 
+                             fancybox=True, shadow=True)
+            legend.get_frame().set_facecolor('white')
 
+        ax.tick_params(labelsize=tick_size)
         self.canvas.draw()
 
     def update_progress(self, progress):
@@ -377,10 +523,76 @@ class SAM2App:
         self.stop_btn.config(state=tk.DISABLED)
         self.progress_label.config(text="Processing stopped.")
 
-    def process_images(self):
-        # Ensure output directory exists
-        os.makedirs(self.config.output_dir, exist_ok=True)
+    def _get_or_create_predictor(self, checkpoint_path, model_cfg_path):
+        """Get existing predictor or create new one, preventing memory leaks"""
+        current_config = (checkpoint_path, model_cfg_path, self.device)
         
+        # Check if we can reuse existing predictor
+        if (self.current_predictor is not None and 
+            self.current_model_config == current_config):
+            return self.current_predictor
+        
+        # Clean up old predictor if exists
+        self._cleanup_predictor()
+        
+        try:
+            # Create new predictor
+            self.current_predictor = build_sam2_video_predictor(
+                model_cfg_path, checkpoint_path, device=self.device
+            )
+            self.current_model_config = current_config
+            return self.current_predictor
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to create SAM2 predictor: {str(e)}")
+            return None
+
+    def _cleanup_predictor(self):
+        """Properly cleanup predictor to prevent memory leaks"""
+        if self.current_predictor is not None:
+            try:
+                # Reset inference state if exists
+                if self.inference_state is not None:
+                    self.current_predictor.reset_state(self.inference_state)
+                    self.inference_state = None
+                
+                # Clear GPU cache if using CUDA
+                if self.device == 'cuda' and torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                
+                # Clear predictor reference
+                self.current_predictor = None
+                self.current_model_config = None
+                
+            except Exception as e:
+                print(f"Warning: Error during predictor cleanup: {e}")
+
+    def process_images(self):
+        """Process images with comprehensive error handling"""
+        try:
+            # Ensure output directory exists
+            os.makedirs(self.config.output_dir, exist_ok=True)
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to create output directory: {str(e)}")
+            self.processing = False
+            self.start_btn.config(state=tk.NORMAL)
+            self.stop_btn.config(state=tk.DISABLED)
+            return
+        
+        try:
+            self._process_images_internal()
+        except Exception as e:
+            # Comprehensive error handling for unexpected failures
+            error_msg = f"Unexpected error during processing: {str(e)}"
+            print(error_msg)
+            messagebox.showerror("Processing Error", error_msg)
+        finally:
+            # Ensure UI state is reset regardless of success or failure
+            self.processing = False
+            self.start_btn.config(state=tk.NORMAL)
+            self.stop_btn.config(state=tk.DISABLED)
+
+    def _process_images_internal(self):
+        """Internal processing method with detailed error handling"""
         # Get parent directory and folder name of input_dir
         parent_dir = os.path.dirname(self.config.input_dir)
         input_folder_name = os.path.basename(self.config.input_dir)
@@ -389,13 +601,32 @@ class SAM2App:
         image_files = self.get_image_files(self.config.input_dir)
         total_images = len(image_files)
         
-        # Get user input range
-        self.start_index = int(self.start_index_entry.get() or 1)
-        self.end_index = int(self.end_index_entry.get() or total_images)
+        if total_images == 0:
+            messagebox.showerror("Error", "No supported image files found in input directory.")
+            return
         
-        # Ensure indices are within valid range
+        # Get user input range with proper validation
+        try:
+            self.start_index = int(self.start_index_entry.get() or 1)
+            self.end_index = int(self.end_index_entry.get() or total_images)
+        except ValueError:
+            messagebox.showerror("Error", "Invalid frame range values. Please enter valid numbers.")
+            self.processing = False
+            self.start_btn.config(state=tk.NORMAL)
+            self.stop_btn.config(state=tk.DISABLED)
+            return
+        
+        # Ensure indices are within valid range (fix boundary condition bug)
         self.start_index = max(1, self.start_index)
-        self.end_index = min(total_images+1, self.end_index)
+        self.end_index = min(total_images, self.end_index)  # Fixed: removed +1 to prevent index overflow
+        
+        # Validate range consistency
+        if self.start_index > self.end_index:
+            messagebox.showerror("Error", "Start index cannot be greater than end index.")
+            self.processing = False
+            self.start_btn.config(state=tk.NORMAL)
+            self.stop_btn.config(state=tk.DISABLED)
+            return
                 
         # Create temporary directory, use input folder name with suffix, if range hasn't changed twice, use the previous jpg_range folder
         if self.start_index != self.start_index_previous or self.end_index != self.end_index_previous:
@@ -411,7 +642,14 @@ class SAM2App:
         
         # Convert all images to JPEG format
         jpeg_files = []
-        for idx, img_path in enumerate(image_files[self.start_index-1:self.end_index]):
+        processing_images = image_files[self.start_index-1:self.end_index]
+        num_processing_images = len(processing_images)
+        
+        # Initialize progress bar for mask prediction only
+        self.update_progress(0)
+        self.progress_label.config(text="Preparing images for mask prediction...")
+        
+        for idx, img_path in enumerate(processing_images):
             # Use simple numeric sequence naming for temporary files
             jpeg_name = f"{idx+self.start_index:06d}.jpg"  # Generate filename like "000001.jpg"
             jpeg_path = os.path.join(temp_dir, jpeg_name)
@@ -419,16 +657,7 @@ class SAM2App:
             # Check if corresponding JPEG file already exists
             if jpeg_name in existing_jpegs:
                 jpeg_files.append(jpeg_path)
-                # Update progress
-                progress = idx / total_images * 50
-                self.update_progress(progress)
-                self.progress_label.config(text=f"Using existing JPEG: {idx+1}/{total_images}")
                 continue
-            
-            # Update progress
-            progress = idx / total_images * 50
-            self.update_progress(progress)
-            self.progress_label.config(text=f"Converting to JPEG: {idx+1}/{total_images}")
             
             try:
                 # First try to read with OpenCV
@@ -504,15 +733,27 @@ class SAM2App:
         sam2_checkpoint = os.path.join(current_dir, self.config.checkpoint)
         model_cfg = os.path.join(current_dir, self.config.model_cfg)
         
-        # Initialize SAM2 model, use temporary JPEG directory
-        predictor = build_sam2_video_predictor(model_cfg, sam2_checkpoint, device=device)
+        # Initialize SAM2 model using managed predictor (prevents memory leaks)
+        predictor = self._get_or_create_predictor(sam2_checkpoint, model_cfg)
+        if predictor is None:
+            self.processing = False
+            self.start_btn.config(state=tk.NORMAL)
+            self.stop_btn.config(state=tk.DISABLED)
+            return
         
-        # If previous state exists, reset first
+        # Reset previous state if exists
         if self.inference_state is not None:
             predictor.reset_state(self.inference_state)
         
         # Initialize new state
-        self.inference_state = predictor.init_state(video_path=temp_dir)
+        try:
+            self.inference_state = predictor.init_state(video_path=temp_dir)
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to initialize inference state: {str(e)}")
+            self.processing = False
+            self.start_btn.config(state=tk.NORMAL)
+            self.stop_btn.config(state=tk.DISABLED)
+            return
 
         # Convert input points and labels to numpy arrays
         points_array = np.array(self.config.input_points)
@@ -527,9 +768,8 @@ class SAM2App:
             labels=labels_array,  # Use converted labels_array
         )
 
-        # Add time recording variables
-        inference_times = []  # Store inference time for each image
-        total_start_time = time.time()  # Overall start time
+        # Overall start time for basic timing
+        total_start_time = time.time()
         
         # run propagation throughout the video and collect the results in a dict
         video_segments = {}  # video_segments contains the per-frame segmentation results
@@ -541,17 +781,29 @@ class SAM2App:
         
         # Start processing each frame
         frame_count = 0
+        self.progress_label.config(text="Starting mask prediction...")
         for out_frame_idx, out_obj_ids, out_mask_logits in timed_propagate_in_video():
-            # Record single frame inference start time (here records the time point when propagate_in_video returns results)
-            frame_inference_start = time.time()
             
-            # Read image
-            image = cv2.imread(image_files[out_frame_idx])
-            if image is None:
-                print(f"Failed to read image: {image_files[out_frame_idx]}. Skipping.")
+            # Read image with proper exception handling and index validation
+            try:
+                # Validate frame index to prevent array out of bounds
+                adjusted_frame_idx = out_frame_idx + self.start_index - 1
+                if adjusted_frame_idx < 0 or adjusted_frame_idx >= len(image_files):
+                    print(f"Warning: Frame index {adjusted_frame_idx} out of bounds. Skipping.")
+                    continue
+                
+                image_path = image_files[adjusted_frame_idx]
+                image = cv2.imread(image_path)
+                if image is None:
+                    print(f"Failed to read image: {image_path}. Skipping.")
+                    continue
+                
+                image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+                image_name = os.path.basename(image_path)
+                
+            except Exception as e:
+                print(f"Error processing frame {out_frame_idx}: {str(e)}. Skipping.")
                 continue
-            image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-            image_name = os.path.basename(image_files[out_frame_idx+self.start_index-1])
 
             # Process inference results (this part is the core post-inference processing)
             video_segments[out_frame_idx] = {
@@ -563,24 +815,7 @@ class SAM2App:
             binary_masks = out_masks[1]
             binary_masks = binary_masks.astype(np.uint8) * 255
             
-            # Record single frame inference end time
-            frame_inference_end = time.time()
-            frame_inference_time = frame_inference_end - frame_inference_start
-            inference_times.append(frame_inference_time)
             frame_count += 1
-            
-            # Calculate current average inference time
-            current_avg_time = sum(inference_times) / len(inference_times)
-            current_fps = 1.0 / current_avg_time if current_avg_time > 0 else 0
-            
-            # Update progress with timing information
-            progress = (out_frame_idx) / total_images * 100
-            self.update_progress(progress)
-            self.progress_label.config(
-                text=f"Processing: {image_name} ({out_frame_idx+1}/{total_images}) - "
-                     f"Frame Time: {frame_inference_time:.3f}s - Avg FPS: {current_fps:.1f}"
-            )
-            self.master.update()
 
             if not self.processing:
                 print("Processing stopped by user.")
@@ -594,57 +829,28 @@ class SAM2App:
             self.current_masks = binary_masks
             self.display_image()
 
-            # Save the binary mask
-            mask1_dir = os.path.join(self.config.output_dir, "mask1")
-            os.makedirs(mask1_dir, exist_ok=True)
-            cv2.imwrite(os.path.join(mask1_dir, image_name), binary_masks[0])
+            # Save the binary mask with error handling
+            try:
+                mask1_dir = os.path.join(self.config.output_dir, "mask1")
+                os.makedirs(mask1_dir, exist_ok=True)
+                mask_path = os.path.join(mask1_dir, image_name)
+                success = cv2.imwrite(mask_path, binary_masks[0])
+                if not success:
+                    print(f"Warning: Failed to save mask for {image_name}")
+            except Exception as e:
+                print(f"Error saving mask for {image_name}: {str(e)}")
+                # Continue processing other frames even if one fails
 
+            # Update progress - show mask prediction progress only
+            mask_progress = (out_frame_idx + 1) / len(processing_images) * 100
+            self.update_progress(mask_progress)
+            self.progress_label.config(
+                text=f"Mask Prediction: {out_frame_idx+1}/{len(processing_images)}"
+            )
             self.master.update()
 
-        # Calculate and output final statistics
-        total_end_time = time.time()
-        total_processing_time = total_end_time - total_start_time
-        
-        if inference_times:
-            avg_inference_time = sum(inference_times) / len(inference_times)
-            avg_fps = 1.0 / avg_inference_time if avg_inference_time > 0 else 0
-            min_time = min(inference_times)
-            max_time = max(inference_times)
-            
-            # Print detailed time statistics
-            print("\n" + "="*60)
-            print("Inference Time Statistics Report")
-            print("="*60)
-            print(f"Number of processed images: {len(inference_times)}")
-            print(f"Average inference time: {avg_inference_time:.4f} seconds")
-            print(f"Average FPS: {avg_fps:.2f}")
-            print(f"Fastest inference time: {min_time:.4f} seconds")
-            print(f"Slowest inference time: {max_time:.4f} seconds")
-            print(f"Total processing time: {total_processing_time:.2f} seconds")
-            print("="*60)
-            
-            # Save time statistics to file
-            stats_file = os.path.join(self.config.output_dir, "inference_timing_stats.txt")
-            with open(stats_file, 'w', encoding='utf-8') as f:
-                f.write("Inference Time Statistics Report\n")
-                f.write("="*60 + "\n")
-                f.write(f"Number of processed images: {len(inference_times)}\n")
-                f.write(f"Average inference time: {avg_inference_time:.4f} seconds\n")
-                f.write(f"Average FPS: {avg_fps:.2f}\n")
-                f.write(f"Fastest inference time: {min_time:.4f} seconds\n")
-                f.write(f"Slowest inference time: {max_time:.4f} seconds\n")
-                f.write(f"Total processing time: {total_processing_time:.2f} seconds\n")
-                f.write("="*60 + "\n")
-                f.write("\nDetailed time records for each frame:\n")
-                for i, t in enumerate(inference_times):
-                    f.write(f"Frame {i+1}: {t:.4f}s\n")
-            
-            print(f"Detailed statistics saved to: {stats_file}")
-        
         self.processing = False
         final_message = "Processing complete." if frame_count > 0 else "Processing stopped."
-        if inference_times:
-            final_message += f" Average inference time: {avg_inference_time:.3f}s"
         self.progress_label.config(text=final_message)
 
         # Re-enable start button and disable stop button when processing is done
@@ -737,10 +943,127 @@ class SAM2App:
             os.makedirs(jpg_dir)
             print(f"Created temporary folder: {jpg_dir}")
 
+    def __del__(self):
+        """Cleanup when application is destroyed"""
+        self._cleanup_predictor()
+
+def get_dpi_scale_factor(root):
+    """Calculate DPI scale factor for high-DPI displays - enhanced for 4K"""
+    try:
+        # Get screen DPI
+        dpi = root.winfo_fpixels('1i')
+        tkinter_scale = dpi / 96.0
+        
+        # Get screen dimensions for better scaling decisions
+        screen_width = root.winfo_screenwidth()
+        screen_height = root.winfo_screenheight()
+        
+        # Enhanced scaling logic for different display types
+        if screen_width >= 3840 or screen_height >= 2160:  # 4K or higher
+            scale_factor = max(1.5, tkinter_scale)
+            scale_factor = min(scale_factor, 3.0)
+        elif screen_width >= 2560 or screen_height >= 1440:  # 2K displays
+            scale_factor = max(1.2, tkinter_scale)
+            scale_factor = min(scale_factor, 2.0)
+        else:  # Standard displays
+            scale_factor = max(1.0, tkinter_scale)
+            scale_factor = min(scale_factor, 1.5)
+        
+        return scale_factor
+    except:
+        return 1.25  # Better default for modern displays
+
+def configure_dpi_aware_fonts(root, style):
+    """Configure fonts that scale with DPI - enhanced for 4K displays"""
+    scale = get_dpi_scale_factor(root)
+    
+    # Enhanced base font sizes for better 4K support
+    screen_width = root.winfo_screenwidth()
+    screen_height = root.winfo_screenheight()
+    
+    # Adjust base sizes based on screen resolution
+    if screen_width >= 3840 or screen_height >= 2160:  # 4K displays
+        base_font_size = 12  # Larger base for 4K
+        base_title_font_size = 14
+        base_button_padding = 12
+    elif screen_width >= 2560 or screen_height >= 1440:  # 2K displays
+        base_font_size = 10
+        base_title_font_size = 12
+        base_button_padding = 11
+    else:  # Standard displays
+        base_font_size = 9
+        base_title_font_size = 10
+        base_button_padding = 10
+    
+    # Calculate scaled sizes with improved minimums
+    font_size = max(10, int(base_font_size * scale))  # Higher minimum
+    title_font_size = max(12, int(base_title_font_size * scale))  # Higher minimum
+    button_padding = max(10, int(base_button_padding * scale))
+    progress_thickness = max(20, int(25 * scale))  # Thicker progress bar
+    
+    print(f"Screen: {screen_width}x{screen_height}")
+    print(f"DPI Scale Factor: {scale:.2f}")
+    print(f"Font Size: {font_size}pt, Title: {title_font_size}pt")
+    print(f"Button Padding: {button_padding}px")
+    
+    # Configure fonts with enhanced DPI scaling
+    style.configure('TLabel', font=('Segoe UI', font_size))
+    style.configure('TButton', font=('Segoe UI', font_size), padding=(button_padding, button_padding//2))
+    style.configure('TEntry', font=('Segoe UI', font_size), fieldbackground='white')
+    style.configure('TCombobox', font=('Segoe UI', font_size))
+    style.configure('TCheckbutton', font=('Segoe UI', font_size))
+    style.configure('TLabelFrame', font=('Segoe UI', font_size, 'bold'))
+    style.configure('TLabelFrame.Label', font=('Segoe UI', title_font_size, 'bold'))
+    
+    # Configure progress bar with enhanced scaling
+    style.configure('TProgressbar', thickness=progress_thickness)
+    
+    return scale
+
 if __name__ == "__main__":
     root = tk.Tk()
-    root.geometry("1000x800")
+    
+    # Make the application DPI aware on Windows
+    try:
+        import ctypes
+        # Tell Windows that this app is DPI aware
+        ctypes.windll.shcore.SetProcessDpiAwareness(1)
+    except:
+        pass  # Ignore if not on Windows or if the call fails
+    
+    # Configure modern UI styling with DPI awareness
     style = ttk.Style()
     style.theme_use('clam')
+    
+    # Configure DPI-aware fonts and get scale factor
+    scale_factor = configure_dpi_aware_fonts(root, style)
+    
+    # Scale window size based on DPI
+    base_width, base_height = 1400, 900
+    min_width, min_height = 1200, 700
+    
+    scaled_width = int(base_width * scale_factor)
+    scaled_height = int(base_height * scale_factor)
+    scaled_min_width = int(min_width * scale_factor)
+    scaled_min_height = int(min_height * scale_factor)
+    
+    root.geometry(f"{scaled_width}x{scaled_height}")
+    root.minsize(scaled_min_width, scaled_min_height)
+    
+    # Set window icon and title styling
+    root.title("SAM2 Mask Generator - Professional Edition")
+    try:
+        # Try to set a professional icon (if available)
+        root.iconbitmap(default='')  # You can add an .ico file path here
+    except:
+        pass  # Ignore if no icon file available
+    
     app = SAM2App(root)
+    
+    # Add cleanup on window close
+    def on_closing():
+        app._cleanup_predictor()
+        root.destroy()
+    
+    root.protocol("WM_DELETE_WINDOW", on_closing)
     root.mainloop()

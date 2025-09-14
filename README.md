@@ -1,12 +1,15 @@
 # SAM 2 Mask Generator
-
 A comprehensive software package designed for automatic Digital Image Correlation (DIC) or other Region of Interest (ROI) recognition, mask generation, and smoothing. This tool leverages the Segment Anything Model 2 (SAM 2) for intelligent mask generation and provides advanced spatial and temporal smoothing capabilities.
 
 ## Overview
 
 This software package consists of two primary components:
 - **SAM 2 Mask Generator** (Python-based GUI application)
+![Demo video](assets/Mask_generator_demo_video.gif)
+
+
 - **Mask Smoothing Module** (MATLAB-based processing tools)
+![Demo video](assets/Smoothing_demo_video.gif)
 
 The complete source code, along with installation instructions, is available in our GitHub repository. Users should consult this README.md file for detailed installation and setup instructions to ensure proper configuration for use.
 
@@ -42,13 +45,21 @@ Or access the demo video via this link: https://www.youtube.com/watch?v=hMHhlv2D
 - CUDA-compatible GPU (optional, for accelerated processing)
 
 ### Python Dependencies
+## Method 1:
 ```bash
 pip install torch torchvision
 pip install opencv-python
 pip install matplotlib
 pip install pillow
 pip install numpy
-pip install tk 
+pip install tqdm
+pip install hydra-core
+pip install iopath
+pip install tkinter
+```
+## Method 2:
+```bash
+pip install -e .
 ```
 
 ### SAM 2 Model Download
